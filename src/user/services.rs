@@ -6,6 +6,7 @@ use argon2::{self,Config, Variant, Version, hash_encoded, Error};
 use bson::Bson;
 use mongodb::{bson::{oid::ObjectId, doc, Document}, options::{FindOneOptions}};
 use chrono::{Utc, Duration as ChronoDuration, Local};
+use serde_json::json;
 
 use super::model::{ModelUser,UserDTO};
 use crate::ddb::DDB;
@@ -75,8 +76,8 @@ pub async fn insert_user(db_data:web::Data<DDB>, param_obj: web::Json<ModelUser>
                 None=>{
                     match db.users.insert_one(user.clone(), None).await {
                         Ok(_) => {
-                            // If the insertion was successful, return the entire collection of users
-                            HttpResponse::Ok().body("Successfully inserted")
+                            let user_json = serde_json::to_string(&user).unwrap();
+                            HttpResponse::Ok().content_type("application/json").body(user_json)
                         }
                         Err(e) => {
                             eprintln!("Error inserting user: {:?}", e);
@@ -119,7 +120,19 @@ pub async fn login(db_data:web::Data<DDB>, param_obj: web::Json<UserDTO>) -> imp
     
                         match token {
                             Ok(t) => {
-                                HttpResponse::Ok().json(t)
+                                let data = TokenData{
+                                    email:email.clone(),
+                                    login_time:Utc::now(),
+                                    exp_time:1000000
+                                };
+                                login_success(&t, data);
+                                let data_json = json!({
+                                    "Email": email.clone(),
+                                    "Token":t,
+                                    "Exp Time":"1000000 milliseconds",
+                                    "Login Time":Utc::now(),
+                                });
+                                HttpResponse::Ok().content_type("application/json").body(data_json.to_string())
                             }
                             Err(_) => HttpResponse::InternalServerError().finish(),
                         }
@@ -154,27 +167,39 @@ fn check_token_map(token: &str)-> Option<TokenData>{
     let token_map = TOKEN_MAP.lock().unwrap();
     token_map.get(token).cloned()
 }
-fn validate_token(req : HttpRequest) ->HttpResponse{
+fn remove_token(email_user:&str) {
+    if let Ok(mut token_map) = TOKEN_MAP.lock(){
+        token_map.remove(email_user);
+    }
+    else{
+        eprintln!("Faild remove token");
+    }
+}
+fn validate_token(req : HttpRequest) ->Result<HttpResponse,Error>{
+    println!("token: {:?}",req.headers().get("Authorization"));
     if let Some(auth_token) = req.headers().get("Authorization"){
         if let Ok(token) = auth_token.to_str(){
             if token.starts_with("Bearer "){
                 let token = &token[7..];
                 if let Some(data) = check_token_map(token){
                     let current_time = Utc::now().timestamp_millis();
-                    //let ex_time = data.login_time + data.exp_time;
-                    if data.exp_time >= current_time{
-                        return HttpResponse::Ok().body("vaild token");
+                    let ex_time = data.login_time.timestamp_millis() + data.exp_time;
+                    if ex_time >= current_time{
+                        return Ok(HttpResponse::Ok().body("vaild token"));
                     }
                     else{
                         let mut token_map = TOKEN_MAP.lock().unwrap();
                         token_map.remove(token);
-                        return HttpResponse::Unauthorized().body("Het han");
+                        return Ok(HttpResponse::Unauthorized().body("Het han"));
                     }
                 }
             }
         }
     }
-    HttpResponse::Unauthorized().finish()
+    else{
+        return Ok(HttpResponse::Unauthorized().finish());
+    }
+    Ok(HttpResponse::Unauthorized().finish())
 }
 fn hash_password(password: &str) -> String {
     let config = Config {
@@ -187,14 +212,11 @@ fn hash_password(password: &str) -> String {
         ad: &[],
         hash_length: 32,
     };
-
     // Hash password
     let salt = b"somesalt"; // Replace with a random salt for your application
     let hash = argon2::hash_encoded(password.as_bytes(), salt, &config).unwrap();
-
     hash
 }
-
 fn verify_password(hash: &str, password: &str) -> bool {
     match argon2::verify_encoded(hash, password.as_bytes()) {
         Ok(true) => true,
@@ -202,60 +224,55 @@ fn verify_password(hash: &str, password: &str) -> bool {
         Err(_) => false,
     }
 }
-// async fn validate_token(req:&HttpRequest) ->Result<HttpResponse,Error>{
-//     if let Some(auth_header) = req.headers().get("Authorization") {
-//         if let Ok(token) = auth_header.to_str(){
-//             if token.starts_with("Bearer "){
-//                 let token = &token[7..];
-                
-//             }
-//             if token == "ex"{
-//                 return Ok(HttpResponse::Ok().body("dung roi"));
-//             }
-//         }
-//     }
-//     Ok(HttpResponse::Unauthorized().finish())
-// }
 #[post("/user/update/{user_id}")]
 pub async fn update_user(data: web::Data<DDB>, path: web::Path<String>,param_obj:web::Json<ModelUser>,req:HttpRequest) -> impl Responder{
     let db = data.as_ref();
     let object_id = ObjectId::from_str(&path).unwrap();
     let filter = doc! {"_id":object_id};
     let options = FindOneOptions::builder().build();
-    match db.users.find_one(filter, options).await{
-        Ok(rs)=>{
-            match rs {
-                Some(_)=>{
-                    let update_doc = doc! {
-                        "$set":{
-                            "email":&param_obj.email.to_string(),
-                            "password":hash_password(&param_obj.password.to_string()),
-                            "full_name":&param_obj.full_name.to_string(),
-                            "state":&param_obj.state.to_string(),
-                            "verified":&param_obj.verified.to_string(),
-                            "roles":&param_obj.roles.to_string(),
-                        }
-                    };
-                    match db.users.update_one(doc! {"_id":object_id}, update_doc, None).await{
-                        Ok(_) =>{
-                            HttpResponse::Ok().body("Update successfully");
-                        }
-                        Err(_)=>{
-                            HttpResponse::NoContent().body("Failed to update");
+    match validate_token(req) {
+        Ok(res)=>{
+            if res.status() == StatusCode::OK{
+                match db.users.find_one(filter, options).await{
+                    Ok(rs)=>{
+                        match rs {
+                            Some(doc)=>{
+                                let update_doc = doc! {
+                                    "$set":{
+                                        "email":&param_obj.email.to_string(),
+                                        "password":hash_password(&param_obj.password.to_string()),
+                                        "full_name":&param_obj.full_name.to_string(),
+                                        "state":&param_obj.state.to_string(),
+                                        "verified":&param_obj.verified.to_string(),
+                                        "roles":&param_obj.roles.to_string(),
+                                    }
+                                };
+                                match db.users.update_one(doc! {"_id":object_id}, update_doc, None).await{
+                                    Ok(_) =>{
+                                        let user_json = serde_json::to_string(&doc).unwrap();
+                                        return HttpResponse::Ok().content_type("application/json").body(user_json);
+                                    }
+                                    Err(_)=>{
+                                        return HttpResponse::NoContent().body("Failed to update");
+                                    }
+                                }
+                            }
+                            None=>{
+                                return HttpResponse::NoContent().body("Failed to update");
+                            }
                         }
                     }
-
+                    Err(e)=>{
+                        println!("An Error: {}", e);
+                        return HttpResponse::NotFound().body("Not Found user");
+                    }
                 }
-                None=>{
-                    HttpResponse::NoContent().body("Failed to update");
-                }
+            }else{
+                return HttpResponse::Unauthorized().body("Unauthorized");
             }
         }
-        Err(e)=>{
-            println!("An Error: {}", e);
-            HttpResponse::NotFound().body("Not Found user");
+        Err(_)=>{
+            return HttpResponse::Unauthorized().body("Unauthorized");
         }
-    }
-
-    HttpResponse::Ok().body("Success")
+    }  
 }

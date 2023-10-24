@@ -2,7 +2,7 @@ mod user;
 mod ddb;
 use actix_web::{HttpServer, App, middleware::Logger, web::{self, Data}};
 use ddb::DDB;
-use user::services::{insert_user, login};
+use user::services::{insert_user, login, update_user};
 
 
 #[actix_web::main]
@@ -20,6 +20,7 @@ async fn main()->std::io::Result<()> {
         .app_data(ddb_data.clone())
         .service(insert_user)
         .service(login)
+        .service(update_user)
     })
     .bind(("127.0.0.1",8000))?
     .run()
