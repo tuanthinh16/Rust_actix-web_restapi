@@ -1,9 +1,0 @@
-{
-    "builds": [
-        {
-            "sourceDirectory": "path/to/your/project",
-            "command": "cargo run",
-            "workingDir": "path/to/your/project"
-        }
-    ]
-}
