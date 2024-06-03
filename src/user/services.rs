@@ -1,31 +1,32 @@
 use std::str::FromStr;
 
-use actix_web::{get, post, put, delete, web, Responder, HttpResponse, ResponseError, http::{header::ContentType, StatusCode}, HttpRequest};
+use actix_web::{cookie::time::Date, delete, get, http::{header::ContentType, StatusCode}, post, put, web, HttpRequest, HttpResponse, Responder, ResponseError};
 use argon2::{self,Config, Variant, Version, hash_encoded, Error};
 
-use bson::Bson;
+
 use mongodb::{bson::{oid::ObjectId, doc, Document}, options::{FindOneOptions}};
-use chrono::{Utc, Duration as ChronoDuration, Local};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDateTime, Timelike, Utc};
 use serde_json::json;
 
-use super::model::{ModelUser,UserDTO};
+use super::model::{ModelUser,UserDTO,UserRDO,UserSDO};
 use crate::ddb::DDB;
-use futures_util::TryStreamExt;
 use derive_more::{Display};
 use jsonwebtoken::{encode, Header, EncodingKey, Algorithm};
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
-    email: String,
+    username: String,
     exp: usize,
 }
 #[derive(Debug, Serialize, Deserialize,Clone)]
 pub struct TokenData{
-    pub email: String,
-    pub login_time: chrono::DateTime<Utc>,
+    pub username: String,
+    pub login_time: chrono::DateTime<Local>,
     pub exp_time: i64,
 
 }
@@ -38,6 +39,7 @@ pub enum UserError{
     UserAlreadyExists,
     UserNotActive,
 }
+
 impl ResponseError for UserError{
     fn error_response(&self) -> HttpResponse<actix_web::body::BoxBody> {
         HttpResponse::build(self.status_code())
@@ -53,110 +55,116 @@ impl ResponseError for UserError{
     }
 }
 
-#[post("/api/register/")]
-pub async fn insert_user(db_data:web::Data<DDB>, param_obj: web::Json<ModelUser>) -> impl Responder {
+#[get("/api/hello")]
+pub async fn hello() -> impl Responder {
+    HttpResponse::Ok().body("Hello World !")
+}
+#[post("/api/register")]
+pub async fn insert_user(db_data: web::Data<DDB>, param_obj: web::Json<ModelUser>) -> impl Responder {
     let db = db_data.get_ref();
-    let user = ModelUser{
+    let user = ModelUser {
         _id: Some(ObjectId::new()),
-        email: param_obj.email.to_string(),
-        full_name:param_obj.full_name.to_string(),
-        password:hash_password(&param_obj.password.to_string()),
-        state:param_obj.state.to_string(),
-        verified:param_obj.verified.to_string(),
-        roles: param_obj.roles.to_string(),
+        username: param_obj.username.clone(),
+        fullname: param_obj.fullname.clone(),
+        password: hash_password(&param_obj.password),
+        address: param_obj.address.clone(),
+        phone: param_obj.phone.clone(),
+        role: param_obj.role.clone(),
+        create_time: Local::now().to_string(),
+        modify_time: Local::now().to_string(),
+        last_login: param_obj.last_login.clone(),
     };
-    let filter = doc! {"email":param_obj.email.to_string()};
-    let find_options = FindOneOptions::builder().build();
-    match db.users.find_one(filter, find_options).await {
-        Ok(rs)=>{
-            match rs {
-                Some(_)=>{
-                    HttpResponse::Conflict().body("User Already Registered")
-                }
-                None=>{
-                    match db.users.insert_one(user.clone(), None).await {
-                        Ok(_) => {
-                            let user_json = serde_json::to_string(&user).unwrap();
-                            HttpResponse::Ok().content_type("application/json").body(user_json)
-                        }
-                        Err(e) => {
-                            eprintln!("Error inserting user: {:?}", e);
-                            HttpResponse::InternalServerError().body("Failed to register user")
-                        }
-                    }
-                }
+    
+    
+    match db.users.insert_one(user.clone(), None).await {
+        Ok(_) => {
+            let user_json = serde_json::to_string(&user).unwrap();
+            HttpResponse::Ok().content_type("application/json").body(user_json)
+        }
+        Err(e) => {
+            eprintln!("Error inserting user: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to register user")
+        }
+    }
+}
+
+#[post("/api/login")]
+pub async fn login(db_data: web::Data<DDB>, param_obj: web::Json<UserDTO>) -> impl Responder {
+    let db = db_data.get_ref();
+    let username = &param_obj.username.clone();
+    let password = &param_obj.password.clone();
+    let filter = doc! {"username": username};
+    eprintln!("___login. filter {}",filter);
+    let options = FindOneOptions::builder().build();
+    eprintln!("___login.start get infouser");
+    let rs = db.users.find_one(filter, options).await;
+
+    let user_response: Option<UserDTO>; // Khởi tạo một biến tạm thời để lưu trữ dữ liệu
+
+    match rs {
+        Ok(result) => {
+            if let Some(document) = result {
+                user_response = Some(UserDTO {
+                    username: document.username.clone(),
+                    password: document.password.clone(),
+                });
+            } else {
+                user_response = None;
+                eprintln!("Khong tim thay user") // Không tìm thấy tài liệu, gán giá trị None cho user_response
             }
         }
-        Err(_e) =>{
-            HttpResponse::InternalServerError().body("errror: {:?}")
+        Err(err) => {
+            user_response = None; // Xử lý lỗi, gán giá trị None cho user_response
+            eprintln!("Loi :{}",err);
         }
     }
 
-}
+    // Kiểm tra và xử lý dữ liệu được trả về
+    if let Some(user) = user_response {
+        
+        let pass = user.password;
+        let is_valid = verify_password(&pass, password);
+        if is_valid {
+            let claims = Claims {
+                username: username.clone(),
+                exp: 1000000, // Set your own expiration time 17min
+            };
+            let token = encode(
+                &Header::default(),
+                &claims,
+                &EncodingKey::from_secret("secret".as_ref()), // Set your own secret key
+            );
 
-#[post("/login")]
-pub async fn login(db_data:web::Data<DDB>, param_obj: web::Json<UserDTO>) -> impl Responder{
-    let db = db_data.get_ref();
-    let email = &param_obj.email.to_string();
-    let password = &param_obj.password.to_string();
-    let filter = doc! {"email": email};
-    let options = FindOneOptions::builder().build();
-    match db.users.find_one(filter, options).await {
-        Ok(rs)=>{
-            match rs {
-                Some(doc)=>{
-                    let pass = doc.password;
-                    let is_vaild = verify_password(&pass, password);
-                    if is_vaild {
-                        let claims = Claims {
-                            email: email.clone(),
-                            exp: 1000000, // Set your own expiration time 17min
-                        };
-                        let token = encode(
-                            &Header::default(),
-                            &claims,
-                            &EncodingKey::from_secret("secret".as_ref()), // Set your own secret key
-                        );
-    
-                        match token {
-                            Ok(t) => {
-                                let data = TokenData{
-                                    email:email.clone(),
-                                    login_time:Utc::now(),
-                                    exp_time:1000000
-                                };
-                                login_success(&t, data);
-                                let data_json = json!({
-                                    "Email": email.clone(),
-                                    "Token":t,
-                                    "Exp Time":"1000000 milliseconds",
-                                    "Login Time":Utc::now(),
-                                });
-                                HttpResponse::Ok().content_type("application/json").body(data_json.to_string())
-                            }
-                            Err(_) => HttpResponse::InternalServerError().finish(),
-                        }
-                    }
-                    else{
-                        HttpResponse::Unauthorized().body("Password is not correct")
-                    }
+            match token {
+                Ok(t) => {
+                    let data = TokenData {
+                        username: user.username.clone(),
+                        login_time: Local::now(),
+                        exp_time: 1000000,
+                    };
+                    login_success(&t, data);
+                    let data_json = json!({
+                        "username": user.username.clone(),
+                        "Token": t,
+                        "Exp Time": "1000000 milliseconds",
+                        "Login Time": Local::now(),
+                    });
+                    update_login_time(&db_data,&user.username).await;
+                    HttpResponse::Ok().content_type("application/json").body(data_json.to_string())
                 }
-                None =>{
-                    println!("Khong thay!");
-                    HttpResponse::NotFound().body("Not Found User")
-                }
+                Err(_) => HttpResponse::InternalServerError().finish(),
             }
+        } else {
+            HttpResponse::Unauthorized().body("Password is not correct")
         }
-        Err(e)=>{
-            println!("Error: {}", e);
-            HttpResponse::NotFound().body("Not Found User")
-        }
+    } else {
+        HttpResponse::NoContent().body("User Not Found")
     }
 }
 fn login_success(token: &str,data:TokenData)-> impl Responder{
     let login_time = Local::now();
-    let utc_time = login_time.with_timezone(&Utc);
-    store_token_map(token, TokenData { email: data.email, login_time: (utc_time), exp_time: (data.exp_time) });
+    let utc_time = login_time.with_timezone(&Local);
+    store_token_map(token, TokenData { username: data.username, login_time: (utc_time), exp_time: (data.exp_time) });
     HttpResponse::Ok().body("Save token successfully")
 }
 fn store_token_map(token: &str,data:TokenData){
@@ -173,6 +181,30 @@ fn remove_token(email_user:&str) {
     }
     else{
         eprintln!("Faild remove token");
+    }
+}
+async fn update_login_time(data: &web::Data<DDB>,username:&str){
+    let db = data.as_ref();
+    let filter = doc! {"username": username};
+    let update = doc! {
+        "$set": {
+            "last_login": Local::now().to_string(),
+            
+        }
+    };
+    match db.users.update_one(filter, update, None).await {
+        Ok(update_result) => {
+            if update_result.matched_count > 0 {
+                
+                eprintln!("Sucess");
+            } else {
+                eprintln!("Error when update login time");
+            }
+        }
+        Err(e) => {
+            eprintln!("Error updating user: {:?}", e);
+            
+        }
     }
 }
 fn validate_token(req : HttpRequest) ->Result<HttpResponse,Error>{
@@ -224,78 +256,108 @@ fn verify_password(hash: &str, password: &str) -> bool {
         Err(_) => false,
     }
 }
-#[get("/api/user/{_userID}")]
-pub async fn get_user(data: web::Data<DDB>, path: web::Path<String>,param_obj:web::Json<ModelUser>,req:HttpRequest) -> impl Responder{
+#[get("/api/user/{user_id}")]
+pub async fn get_user(data: web::Data<DDB>, path: web::Path<String>, req: HttpRequest) -> impl Responder {
     let db = data.as_ref();
-    let object_id = ObjectId::from_str(&path).unwrap();
-    let filter = doc! {"_id":object_id};
+    let user_id_str = path.into_inner();
+
+    // Chuyển đổi chuỗi user_id sang ObjectId an toàn
+    let object_id = match ObjectId::from_str(&user_id_str) {
+        Ok(oid) => oid,
+        Err(_) => return HttpResponse::BadRequest().body("Invalid ObjectId"),
+    };
+
+    let filter = doc! {"_id": object_id};
     let options = FindOneOptions::builder().build();
-    match db.users.find_one(filter,options).await{
-        Ok(rs)=>{
-            match rs {
-                Some(doc)=>{
-                    let user_json = serde_json::to_string(&doc).unwrap();
-                    return HttpResponse::Ok().content_type("application/json").body(user_json);
-                }
-                None=>{
-                    return HttpResponse::NotFound().body("Not Found User");
-                }
+
+    match db.users.find_one(filter, options).await {
+        Ok(rs) => match rs {
+            Some(doc) => {
+                let userDoc  = UserRDO{
+                    username:doc.username.clone(),
+                    fullname:doc.fullname.clone(),
+                    password:doc.password.clone(),
+                    address : doc.address.clone(),
+                    phone:doc.phone.clone(),
+                    role:doc.role.clone()
+                };
+                let user_json = serde_json::to_string(&userDoc).unwrap();
+                HttpResponse::Ok().content_type("application/json").body(user_json)
             }
-        }
-        Err(_)=>{
-            return HttpResponse::NoContent().body("Failed to get");
+            None => HttpResponse::NotFound().body("Not Found User"),
+        },
+        Err(_) => HttpResponse::InternalServerError().body("Failed to get user"),
+    }
+}
+#[get("/api/user/username/{username}")]
+pub async fn get_user_by_username(data: web::Data<DDB>, path: web::Path<String>, req: HttpRequest) -> impl Responder {
+    let db = data.as_ref();
+    let user_id_str = path.into_inner();
+    let username = user_id_str.to_string();
+
+    let filter = doc! {"username": username};
+    let options = FindOneOptions::builder().build();
+
+    match db.users.find_one(filter, options).await {
+        Ok(rs) => match rs {
+            Some(doc) => {
+                let userDoc  = UserRDO{
+                    username:doc.username.clone(),
+                    fullname:doc.fullname.clone(),
+                    password:doc.password.clone(),
+                    address : doc.address.clone(),
+                    phone:doc.phone.clone(),
+                    role:doc.role.clone()
+                };
+                let user_json = serde_json::to_string(&userDoc).unwrap();
+                HttpResponse::Ok().content_type("application/json").body(user_json)
+            }
+            None => HttpResponse::NotFound().body("Not Found User"),
+        },
+        Err(e) => 
+        {
+            eprintln!("Error: {}",e);
+            HttpResponse::InternalServerError().body("Failed to get user")
         }
     }
 }
-#[post("/api/user/update/{user_id}")]
-pub async fn update_user(data: web::Data<DDB>, path: web::Path<String>,param_obj:web::Json<ModelUser>,req:HttpRequest) -> impl Responder{
-    let db = data.as_ref();
-    let object_id = ObjectId::from_str(&path).unwrap();
-    let filter = doc! {"_id":object_id};
-    let options = FindOneOptions::builder().build();
-    match validate_token(req) {
-        Ok(res)=>{
-            if res.status() == StatusCode::OK{
-                match db.users.find_one(filter, options).await{
-                    Ok(rs)=>{
-                        match rs {
-                            Some(doc)=>{
-                                let update_doc = doc! {
-                                    "$set":{
-                                        "email":&param_obj.email.to_string(),
-                                        "password":hash_password(&param_obj.password.to_string()),
-                                        "full_name":&param_obj.full_name.to_string(),
-                                        "state":&param_obj.state.to_string(),
-                                        "verified":&param_obj.verified.to_string(),
-                                        "roles":&param_obj.roles.to_string(),
-                                    }
-                                };
-                                match db.users.update_one(doc! {"_id":object_id}, update_doc, None).await{
-                                    Ok(_) =>{
-                                        let user_json = serde_json::to_string(&doc).unwrap();
-                                        return HttpResponse::Ok().content_type("application/json").body(user_json);
-                                    }
-                                    Err(_)=>{
-                                        return HttpResponse::NoContent().body("Failed to update");
-                                    }
-                                }
-                            }
-                            None=>{
-                                return HttpResponse::NoContent().body("Failed to update");
-                            }
-                        }
-                    }
-                    Err(e)=>{
-                        println!("An Error: {}", e);
-                        return HttpResponse::NotFound().body("Not Found user");
-                    }
-                }
-            }else{
-                return HttpResponse::Unauthorized().body("Unauthorized");
+#[put("/api/user/{user_id}")]
+pub async fn update_user(db_data: web::Data<DDB>, path: web::Path<String>, param_obj: web::Json<ModelUser>) -> impl Responder {
+    let db = db_data.get_ref();
+    let user_id_str = path.into_inner();
+
+    // Chuyển đổi chuỗi user_id sang ObjectId an toàn
+    let object_id = match ObjectId::from_str(&user_id_str) {
+        Ok(oid) => oid,
+        Err(_) => return HttpResponse::BadRequest().body("Invalid ObjectId"),
+    };
+
+    let filter = doc! {"_id": object_id};
+    let update = doc! {
+        "$set": {
+            "username": &param_obj.username,
+            "fullname": &param_obj.fullname,
+            "password": hash_password(&param_obj.password),
+            "address": &param_obj.address,
+            "phone": &param_obj.phone,
+            "role": &param_obj.role,
+            "modify_time": Local::now().to_string(),
+            
+        }
+    };
+
+    match db.users.update_one(filter, update, None).await {
+        Ok(update_result) => {
+            if update_result.matched_count > 0 {
+                let updated_user_json = serde_json::to_string(&param_obj.into_inner()).unwrap();
+                HttpResponse::Ok().content_type("application/json").body(updated_user_json)
+            } else {
+                HttpResponse::NotFound().body("User not found")
             }
         }
-        Err(_)=>{
-            return HttpResponse::Unauthorized().body("Unauthorized");
+        Err(e) => {
+            eprintln!("Error updating user: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to update user")
         }
-    }  
+    }
 }

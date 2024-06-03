@@ -25,7 +25,7 @@ impl DDB{
         let client = Client::with_options(client_options).unwrap();
 
         let db = client.database(db_name);
-        let users :Collection<ModelUser>= db.collection("accounts");
+        let users :Collection<ModelUser>= db.collection("users");
         DDB{users}
     }
 }

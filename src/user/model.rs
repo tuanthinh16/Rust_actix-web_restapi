@@ -5,15 +5,36 @@ use mongodb::bson::{oid::ObjectId, doc, Document};
 pub struct ModelUser{
     #[serde(default)]
     pub _id: Option<ObjectId>,
-    pub email: String,
-    pub full_name:String,
+    pub username: String,
+    pub fullname:String,
     pub password: String,
-    pub state :String,
-    pub verified : String,
-    pub roles : String,
+    pub address : String,
+    pub role :String,
+    pub phone : String,
+    pub last_login : String,
+    pub create_time:String,
+    pub modify_time : String,
+
 }
 #[derive(Deserialize,Serialize,Debug,Clone)]
+pub struct UserRDO{
+    pub username: String,
+    pub password:String,
+    pub fullname:String,
+    pub address:String,
+    pub phone :String,
+    pub role : String,
+}
+#[derive(Deserialize,Serialize,Debug,Clone)]
+pub struct UserSDO{
+    pub username:String,
+    pub password:String,
+    pub fullname:String,
+}
+
+#[derive(Deserialize,Serialize,Debug,Clone)]
 pub struct UserDTO{
-    pub email: String,
-    pub password: String,
+    pub username:String,
+    pub password:String,
+    
 }
