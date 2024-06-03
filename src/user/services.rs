@@ -53,7 +53,7 @@ impl ResponseError for UserError{
     }
 }
 
-#[post("/user/register/")]
+#[post("/api/register/")]
 pub async fn insert_user(db_data:web::Data<DDB>, param_obj: web::Json<ModelUser>) -> impl Responder {
     let db = db_data.get_ref();
     let user = ModelUser{
@@ -87,14 +87,14 @@ pub async fn insert_user(db_data:web::Data<DDB>, param_obj: web::Json<ModelUser>
                 }
             }
         }
-        Err(e) =>{
+        Err(_e) =>{
             HttpResponse::InternalServerError().body("errror: {:?}")
         }
     }
 
 }
 
-#[post("/login/")]
+#[post("/login")]
 pub async fn login(db_data:web::Data<DDB>, param_obj: web::Json<UserDTO>) -> impl Responder{
     let db = db_data.get_ref();
     let email = &param_obj.email.to_string();
@@ -224,7 +224,30 @@ fn verify_password(hash: &str, password: &str) -> bool {
         Err(_) => false,
     }
 }
-#[post("/user/update/{user_id}")]
+#[get("/api/user/{_userID}")]
+pub async fn get_user(data: web::Data<DDB>, path: web::Path<String>,param_obj:web::Json<ModelUser>,req:HttpRequest) -> impl Responder{
+    let db = data.as_ref();
+    let object_id = ObjectId::from_str(&path).unwrap();
+    let filter = doc! {"_id":object_id};
+    let options = FindOneOptions::builder().build();
+    match db.users.find_one(filter,options).await{
+        Ok(rs)=>{
+            match rs {
+                Some(doc)=>{
+                    let user_json = serde_json::to_string(&doc).unwrap();
+                    return HttpResponse::Ok().content_type("application/json").body(user_json);
+                }
+                None=>{
+                    return HttpResponse::NotFound().body("Not Found User");
+                }
+            }
+        }
+        Err(_)=>{
+            return HttpResponse::NoContent().body("Failed to get");
+        }
+    }
+}
+#[post("/api/user/update/{user_id}")]
 pub async fn update_user(data: web::Data<DDB>, path: web::Path<String>,param_obj:web::Json<ModelUser>,req:HttpRequest) -> impl Responder{
     let db = data.as_ref();
     let object_id = ObjectId::from_str(&path).unwrap();

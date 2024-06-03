@@ -14,18 +14,18 @@ pub struct DDB{
 }
 impl DDB{
     pub async fn new()->Self{
-        let client_options = ClientOptions::parse("mongodb+srv://tuanthinhdo37:Concac11@rustdata.uf1ie8u.mongodb.net/?retryWrites=true&w=majority")
+        let client_options = ClientOptions::parse("mongodb+srv://tuanthinhdo37:Concac11@ytedata.pu0fqv0.mongodb.net/?retryWrites=true&w=majority&appName=YTEData")
         .await
         .expect("Failed to parse options");
 
-        let db_name = "FirstApi";
+        let db_name = "YTE";
         // let server_api = ServerApi::builder().version(ServerApiVersion::V1).build();
         // client_options.server_api = Some(server_api);
 
         let client = Client::with_options(client_options).unwrap();
 
         let db = client.database(db_name);
-        let users :Collection<ModelUser>= db.collection("users");
+        let users :Collection<ModelUser>= db.collection("accounts");
         DDB{users}
     }
 }
