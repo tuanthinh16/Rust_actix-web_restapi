@@ -1,15 +1,9 @@
 {
-    "version": 2,
     "builds": [
         {
-            "src": "Dockerfile",
-            "use": "@vercel/docker"
-        }
-    ],
-    "routes": [
-        {
-            "src": "/(.*)",
-            "dest": "/"
+            "sourceDirectory": "path/to/your/project",
+            "command": "cargo run",
+            "workingDir": "path/to/your/project"
         }
     ]
 }
